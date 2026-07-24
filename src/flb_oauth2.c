@@ -469,6 +469,7 @@ int flb_oauth2_parse_json_response(const char *json_data, size_t json_size,
     jsmntok_t *tokens;
     char tmp_num[32];
     uint64_t new_expires_in = 0;
+    uint64_t effective_skew;
 
     jsmn_init(&parser);
     tokens = flb_calloc(1, sizeof(jsmntok_t) * tokens_size);
@@ -477,7 +478,19 @@ int flb_oauth2_parse_json_response(const char *json_data, size_t json_size,
         return -1;
     }
 
-    ret = jsmn_parse(&parser, json_data, json_size, tokens, tokens_size);
+    while ((ret = jsmn_parse(&parser, json_data, json_size, tokens, tokens_size)) == JSMN_ERROR_NOMEM) {
+        jsmntok_t *tmp_tokens;
+        tokens_size *= 2;
+        tmp_tokens = flb_realloc(tokens, sizeof(jsmntok_t) * tokens_size);
+        if (!tmp_tokens) {
+            flb_errno();
+            flb_free(tokens);
+            return -1;
+        }
+        tokens = tmp_tokens;
+        jsmn_init(&parser);
+    }
+
     if (ret <= 0) {
         flb_error("[oauth2] cannot parse payload (size=%zu)", json_size);
         flb_free(tokens);
@@ -563,9 +576,15 @@ int flb_oauth2_parse_json_response(const char *json_data, size_t json_size,
 
     flb_free(tokens);
 
-    if (!new_access_token || !new_token_type || new_expires_in <= ctx->refresh_skew) {
+    effective_skew = ctx->refresh_skew;
+    if (new_expires_in <= effective_skew && new_expires_in > 0) {
+        effective_skew = new_expires_in / 2;
+    }
+
+    if (!new_access_token || !new_token_type || new_expires_in <= effective_skew) {
         flb_sds_destroy(new_access_token);
         flb_sds_destroy(new_token_type);
+        flb_error("[oauth2] invalid access token response or short expiration");
         return -1;
     }
 
