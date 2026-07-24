@@ -1008,12 +1008,10 @@ void test_parse_rejects_invalid_expires_in(void)
         "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":\"\"}",
         "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":-1}",
         "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":\"3600x\"}",
-        "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":0}",
-        "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":50}",
-        "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":66}"
+        "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":0}"
     };
 
-    for (index = 0; index < 6; index++) {
+    for (index = 0; index < 4; index++) {
         memset(&ctx, 0, sizeof(ctx));
         populate_parse_ctx(&ctx, "old-token", "OldBearer", 1200);
         ctx.refresh_skew = FLB_OAUTH2_DEFAULT_SKEW_SECS;
@@ -1029,6 +1027,63 @@ void test_parse_rejects_invalid_expires_in(void)
 
         destroy_parse_ctx(&ctx);
     }
+}
+
+void test_parse_short_lived_expires_in(void)
+{
+    int index;
+    int ret;
+    struct flb_oauth2 ctx;
+    struct {
+        const char *payload;
+        uint64_t expected_expires_in;
+    } cases[] = {
+        {"{\"access_token\":\"short-22\",\"token_type\":\"Bearer\",\"expires_in\":22}", 20},
+        {"{\"access_token\":\"short-50\",\"token_type\":\"Bearer\",\"expires_in\":50}", 45},
+        {"{\"access_token\":\"short-66\",\"token_type\":\"Bearer\",\"expires_in\":66}", 60}
+    };
+
+    for (index = 0; index < 3; index++) {
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.refresh_skew = FLB_OAUTH2_DEFAULT_SKEW_SECS;
+
+        ret = flb_oauth2_parse_json_response(cases[index].payload,
+                                             strlen(cases[index].payload),
+                                             &ctx);
+
+        TEST_CHECK(ret == 0);
+        TEST_CHECK(strcmp(ctx.token_type, "Bearer") == 0);
+        TEST_CHECK(ctx.expires_in == cases[index].expected_expires_in);
+
+        destroy_parse_ctx(&ctx);
+    }
+}
+
+void test_parse_large_json_response(void)
+{
+    int ret;
+    struct flb_oauth2 ctx = {0};
+    char large_payload[2048];
+    int pos = 0;
+    int i;
+
+    pos += snprintf(large_payload + pos, sizeof(large_payload) - pos,
+                    "{\"access_token\":\"large-token\",\"token_type\":\"Bearer\",\"expires_in\":3600");
+
+    for (i = 0; i < 20; i++) {
+        pos += snprintf(large_payload + pos, sizeof(large_payload) - pos,
+                        ",\"extra_key_%d\":\"extra_val_%d\"", i, i);
+    }
+    pos += snprintf(large_payload + pos, sizeof(large_payload) - pos, "}");
+
+    ctx.refresh_skew = FLB_OAUTH2_DEFAULT_SKEW_SECS;
+    ret = flb_oauth2_parse_json_response(large_payload, strlen(large_payload), &ctx);
+
+    TEST_CHECK(ret == 0);
+    TEST_CHECK(strcmp(ctx.access_token, "large-token") == 0);
+    TEST_CHECK(strcmp(ctx.token_type, "Bearer") == 0);
+
+    destroy_parse_ctx(&ctx);
 }
 
 void test_caching_and_refresh(void)
@@ -1259,6 +1314,8 @@ TEST_LIST = {
     {"parse_rejects_missing_required_fields",
      test_parse_rejects_missing_required_fields},
     {"parse_rejects_invalid_expires_in", test_parse_rejects_invalid_expires_in},
+    {"parse_short_lived_expires_in", test_parse_short_lived_expires_in},
+    {"parse_large_json_response", test_parse_large_json_response},
     {"caching_and_refresh", test_caching_and_refresh},
     {"user_agent_header_optional", test_user_agent_header_optional},
     {"legacy_create_manual_payload_flow", test_legacy_create_manual_payload_flow},
