@@ -175,14 +175,16 @@ int gce_metadata_read_token(struct flb_stackdriver *ctx)
     }
 
     ret = flb_oauth2_parse_json_response(payload, flb_sds_len(payload), ctx->o);
-    flb_sds_destroy(payload);
-    flb_sds_destroy(uri);
-
     if (ret != 0) {
-        flb_plg_error(ctx->ins, "unable to parse token body");
+        flb_plg_error(ctx->ins, "unable to parse token body (len=%zu)", flb_sds_len(payload));
+        flb_oauth2_invalidate_token(ctx->o);
+        flb_sds_destroy(payload);
+        flb_sds_destroy(uri);
         return -1;
     }
-    ctx->o->expires_at = time(NULL) + ctx->o->expires_in;
+
+    flb_sds_destroy(payload);
+    flb_sds_destroy(uri);
     return 0;
 }
 

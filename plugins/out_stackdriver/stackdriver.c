@@ -133,11 +133,45 @@ static void oauth2_cache_cleanup(void)
     pthread_mutex_unlock(&oauth2_cache_lock);
 }
 
+/* Clear thread-local oauth2 cache */
+static void oauth2_cache_clear_current_thread(void)
+{
+    flb_sds_t tmp;
+    time_t *tmp_expires;
+
+    if (oauth2_cache_initialized == FLB_FALSE) {
+        return;
+    }
+
+    tmp = pthread_getspecific(oauth2_type);
+    if (tmp) {
+        flb_sds_destroy(tmp);
+        pthread_setspecific(oauth2_type, NULL);
+    }
+
+    tmp = pthread_getspecific(oauth2_token);
+    if (tmp) {
+        flb_sds_destroy(tmp);
+        pthread_setspecific(oauth2_token, NULL);
+    }
+
+    tmp_expires = pthread_getspecific(oauth2_token_expires);
+    if (tmp_expires) {
+        flb_free(tmp_expires);
+        pthread_setspecific(oauth2_token_expires, NULL);
+    }
+}
+
 /* Set oauth2 type and token in pthread keys */
 static void oauth2_cache_set(char *type, char *token, time_t expires)
 {
     flb_sds_t tmp;
     time_t *tmp_expires;
+
+    if (!type || !token) {
+        oauth2_cache_clear_current_thread();
+        return;
+    }
 
     /* oauth2 type */
     tmp = pthread_getspecific(oauth2_type);
@@ -179,15 +213,16 @@ static time_t oauth2_cache_get_expiration()
     return 0;
 }
 
-/* By using pthread keys cached values, compose the authorizatoin token */
-static flb_sds_t oauth2_cache_to_token()
+/* By using pthread keys cached values, compose the authorization token */
+static flb_sds_t oauth2_cache_to_token(void)
 {
     flb_sds_t type;
     flb_sds_t token;
     flb_sds_t output;
 
     type = pthread_getspecific(oauth2_type);
-    if (!type) {
+    token = pthread_getspecific(oauth2_token);
+    if (!type || !token) {
         return NULL;
     }
 
@@ -196,7 +231,6 @@ static flb_sds_t oauth2_cache_to_token()
         return NULL;
     }
 
-    token = pthread_getspecific(oauth2_token);
     flb_sds_printf(&output, " %s", token);
     return output;
 }
@@ -3150,7 +3184,14 @@ static void cb_stackdriver_flush(struct flb_event_chunk *event_chunk,
                               (char* []) {name});
             }
 #endif
-          if (c->resp.status >= 400 && c->resp.status < 500) {
+          if (c->resp.status == 401 || c->resp.status == 403) {
+            flb_plg_warn(ctx->ins, "tag=%s oauth token unauthorized/forbidden (status=%i), invalidating token and retrying",
+                         event_chunk->tag, c->resp.status);
+            flb_oauth2_invalidate_token(ctx->o);
+            oauth2_cache_clear_current_thread();
+            ret_code = FLB_RETRY;
+          }
+          else if (c->resp.status >= 400 && c->resp.status < 500) {
             ret_code = FLB_ERROR;
             flb_plg_warn(ctx->ins, "tag=%s error sending to Cloud Logging: %s", event_chunk->tag,
                          c->resp.payload);
